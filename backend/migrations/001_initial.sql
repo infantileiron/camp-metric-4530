@@ -316,6 +316,64 @@ ALTER TABLE ONLY public.snapshots
 
 
 --
+-- Name: deliveries; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.deliveries (
+    id integer NOT NULL,
+    package_id character varying(64) NOT NULL,
+    snapshot_id integer NOT NULL,
+    metric_code character varying(40) NOT NULL,
+    metric_version integer,
+    date_from character varying(10) NOT NULL,
+    date_to character varying(10) NOT NULL,
+    revision integer NOT NULL,
+    approved_at character varying(40),
+    approved_by character varying(100),
+    checksum character varying(64) NOT NULL,
+    payload json NOT NULL,
+    status character varying(20),
+    outcome character varying(64),
+    attempts integer,
+    last_error text,
+    ack json,
+    confirmed_at character varying(40),
+    created_at character varying(40),
+    updated_at character varying(40)
+);
+
+--
+-- Name: deliveries_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.deliveries_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+ALTER SEQUENCE public.deliveries_id_seq OWNED BY public.deliveries.id;
+
+ALTER TABLE ONLY public.deliveries ALTER COLUMN id SET DEFAULT nextval('public.deliveries_id_seq'::regclass);
+
+ALTER TABLE ONLY public.deliveries
+    ADD CONSTRAINT deliveries_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.deliveries
+    ADD CONSTRAINT deliveries_package_id_key UNIQUE (package_id);
+
+ALTER TABLE ONLY public.deliveries
+    ADD CONSTRAINT deliveries_snapshot_id_key UNIQUE (snapshot_id);
+
+ALTER TABLE ONLY public.deliveries
+    ADD CONSTRAINT deliveries_metric_code_date_from_date_to_revision_key UNIQUE (metric_code, date_from, date_to, revision);
+
+ALTER TABLE ONLY public.deliveries
+    ADD CONSTRAINT deliveries_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES public.snapshots(id);
+
+--
 -- PostgreSQL database dump complete
 --
 

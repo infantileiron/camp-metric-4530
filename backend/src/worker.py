@@ -4,14 +4,22 @@ import redis
 from src.config.database import Session
 from src.models.entities import Snapshot
 from src.services.analysis import calculate
+from src.services import delivery
 r=redis.Redis.from_url(os.environ['REDIS_URL'])
 with Session() as recovery:
  for pending in recovery.query(Snapshot).filter(Snapshot.state.in_(['queued','running'])).all():
   pending.state='queued';r.rpush('camp:snapshots',pending.id)
  recovery.commit()
+DISPATCH_EVERY=float(os.getenv('DELIVERY_INTERVAL_SECONDS','10'))
+last_dispatch=0.0
 while True:
  Path('/tmp/heartbeat').touch()
  try:
+  if delivery.receiver_url() and time.time()-last_dispatch>=DISPATCH_EVERY:
+   last_dispatch=time.time()
+   with Session() as outbox:
+    try:delivery.dispatch(outbox,limit=5,on_progress=lambda:Path('/tmp/heartbeat').touch())
+    except Exception:logging.exception('delivery dispatch')
   item=r.blpop('camp:snapshots',timeout=3)
   if not item:continue
   with Session() as s:

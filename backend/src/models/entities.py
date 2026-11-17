@@ -12,6 +12,13 @@ class Fact(Base):
 class Snapshot(Base):
  __tablename__='snapshots'
  id=Column(Integer,primary_key=True);metric_id=Column(Integer,ForeignKey('metrics.id'));baseline_id=Column(Integer,ForeignKey('snapshots.id'),nullable=True);date_from=Column(String(10));date_to=Column(String(10));state=Column(String(20),default='queued');result=Column(JSON,nullable=True);error=Column(Text,default='');note=Column(Text,default='');approval=Column(String(20),default='draft');approved_by=Column(String(100),default='')
+class Delivery(Base):
+ __tablename__='deliveries';__table_args__=(UniqueConstraint('package_id'),UniqueConstraint('snapshot_id'),UniqueConstraint('metric_code','date_from','date_to','revision'))
+ id=Column(Integer,primary_key=True);package_id=Column(String(64),nullable=False);snapshot_id=Column(Integer,ForeignKey('snapshots.id'),nullable=False)
+ metric_code=Column(String(40),nullable=False);metric_version=Column(Integer);date_from=Column(String(10),nullable=False);date_to=Column(String(10),nullable=False)
+ revision=Column(Integer,nullable=False);approved_at=Column(String(40));approved_by=Column(String(100));checksum=Column(String(64),nullable=False);payload=Column(JSON,nullable=False)
+ status=Column(String(20),default='pending');outcome=Column(String(64),default='');attempts=Column(Integer,default=0);last_error=Column(Text,default='')
+ ack=Column(JSON,nullable=True);confirmed_at=Column(String(40),default='');created_at=Column(String(40));updated_at=Column(String(40))
 class Audit(Base):
  __tablename__='audits'
  id=Column(Integer,primary_key=True);actor=Column(String(100));action=Column(String(200));created=Column(String(40))

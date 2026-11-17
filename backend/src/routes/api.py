@@ -1,13 +1,15 @@
 import os,json
 import redis
 from fastapi import APIRouter,Depends,HTTPException,Response
+from sqlalchemy.exc import IntegrityError
 from src.config.database import db
-from src.models.entities import User,Metric,Fact,Snapshot,Audit
+from src.models.entities import User,Metric,Fact,Snapshot,Audit,Delivery
 from src.schemas.business import Login,MetricInput,FactInput,RunInput,NoteInput
 from src.middlewares.auth import current,editor,admin
 from src.utils.security import verify,token
 from src.services.business import audit,dump
 from src.services.repository import save_metric,save_fact
+from src.services import delivery as deliveries
 from src.controllers import business as ensure
 router=APIRouter()
 @router.post('/auth/login')
@@ -58,13 +60,27 @@ def note(i:int,data:NoteInput,u=Depends(editor),s=Depends(db)):
  r.note=data.note;s.commit();audit(s,u,'起草签核意见 '+str(i));return dump(r)
 @router.post('/snapshots/{i}/approve')
 def approve(i:int,u=Depends(admin),s=Depends(db)):
- r=ensure.snapshot(s,i)
- if r.state!='done' or r.approval=='approved':raise HTTPException(409,'仅成功且未签核快照可签核')
- if r.result['value'] is None:raise HTTPException(409,'零分母undefined快照不能签核，请修正口径')
- if len(r.note)<8:raise HTTPException(409,'先填写至少8字业务解释')
- m=ensure.metric(s,r.metric_id)
- if any(getattr(m,k)!=v for k,v in r.result['metric'].items() if k not in ['locked']):raise HTTPException(409,'口径在试算后已变更，请用当前版本重新试算再签核')
- r.approval='approved';r.approved_by=u.email;m.locked=True;s.commit();audit(s,u,'签核冻结 '+str(i));return dump(r)
+ for attempt in range(4):
+  r=ensure.snapshot(s,i)
+  if r.state!='done' or r.approval=='approved':raise HTTPException(409,'仅成功且未签核快照可签核')
+  if r.result['value'] is None:raise HTTPException(409,'零分母undefined快照不能签核，请修正口径')
+  if len(r.note)<8:raise HTTPException(409,'先填写至少8字业务解释')
+  m=ensure.metric(s,r.metric_id)
+  if any(getattr(m,k)!=v for k,v in r.result['metric'].items() if k not in ['locked']):raise HTTPException(409,'口径在试算后已变更，请用当前版本重新试算再签核')
+  approved_at=deliveries.now_iso()
+  try:
+   r.approval='approved';r.approved_by=u.email
+   deliveries.enqueue(s,r,u.email,approved_at)
+   m.locked=True
+   audit(s,u,'签核冻结并登记待报送 '+str(i))
+   s.commit()
+   return dump(r)
+  except IntegrityError:
+   # 并发签核同一指标日期窗抢到同一版本号，或同一快照被重复签核：
+   # 整体回滚（签核标记不落库）后重新读状态再试。
+   s.rollback()
+   if attempt==3:raise HTTPException(409,'并发签核冲突，请刷新后重试')
+ return dump(r)
 @router.get('/snapshots/{i}/export')
 def export(i:int,u=Depends(current),s=Depends(db)):
  r=ensure.snapshot(s,i)
@@ -72,3 +88,33 @@ def export(i:int,u=Depends(current),s=Depends(db)):
  return Response(json.dumps(dump(r),ensure_ascii=False,indent=2),media_type='application/json',headers={'Content-Disposition':f'attachment; filename="camp-metric-{i}.json"'})
 @router.get('/audits')
 def audits(u=Depends(admin),s=Depends(db)):return [dump(r) for r in s.query(Audit).order_by(Audit.id.desc()).limit(100)]
+@router.get('/deliveries')
+def deliveries_list(u=Depends(current),s=Depends(db)):
+ items=[]
+ for r in s.query(Delivery).order_by(Delivery.id.desc()).all():
+  item=dump(r);item.pop('payload',None);items.append(item)
+ return {'receiver_configured':bool(deliveries.receiver_url()),'items':items}
+@router.post('/deliveries/{i}/retry')
+def deliveries_retry(i:int,u=Depends(editor),s=Depends(db)):
+ r=s.get(Delivery,i)
+ if not r:raise HTTPException(404,'报送记录不存在')
+ if r.status=='confirmed':raise HTTPException(409,'接收端已确认，无需补发')
+ if r.snapshot_id and ensure.snapshot(s,r.snapshot_id).approval!='approved':raise HTTPException(409,'仅已签核快照可补发')
+ r=deliveries.retry(s,r,u);s.commit();item=dump(r);item.pop('payload',None);return item
+@router.post('/deliveries/dispatch')
+def deliveries_dispatch(u=Depends(editor),s=Depends(db)):
+ if not deliveries.receiver_url():raise HTTPException(503,'未配置接收端地址 RECEIVER_URL')
+ try:results=deliveries.dispatch(s)
+ except deliveries.DeliveryError as exc:raise HTTPException(503,str(exc))
+ return {'results':[{'id':i,'status':st} for i,st in results]}
+@router.get('/deliveries/{i}/reconcile')
+def deliveries_reconcile(i:int,u=Depends(current),s=Depends(db)):
+ r=s.get(Delivery,i)
+ if not r:raise HTTPException(404,'报送记录不存在')
+ try:return deliveries.reconcile(r)
+ except deliveries.DeliveryError as exc:raise HTTPException(503,str(exc))
+@router.get('/deliveries/{i}/package')
+def deliveries_package(i:int,u=Depends(current),s=Depends(db)):
+ r=s.get(Delivery,i)
+ if not r:raise HTTPException(404,'报送记录不存在')
+ return Response(json.dumps(r.payload,ensure_ascii=False,indent=2),media_type='application/json',headers={'Content-Disposition':f'attachment; filename="camp-metric-package-{r.package_id[:12]}.json"'})
